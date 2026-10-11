@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+import random
 
 
 class Encoder(nn.Module):
@@ -253,7 +254,7 @@ class Decoder(nn.Module):
                 c = c * ft + cit * it
                 h = torch.tanh(c) * ot
 
-                contx,alpha = self.attention.forward(s=h,all_h=h_all)
+                contx,alpha = self.attention(s=h,all_h=h_all)
                 combined = torch.cat((h,contx),dim=-1)
                 logit_t = combined @ self.dW_hy + self.db_y
                 logits_list.append(logit_t)
@@ -267,12 +268,66 @@ class Decoder(nn.Module):
 class Seq2SeqAttention(nn.Module):
     def __init__(self, src_vocab, tgt_vocab, embedding_dim, hidden_size):
         super().__init__()
+        self.src_vocab = src_vocab
+        self.tgt_vocab = tgt_vocab
+        self.embedding_dim = embedding_dim
+        self.hidden_size = hidden_size
         self.encoder = Encoder(src_vocab, embedding_dim, hidden_size)
         self.decoder = Decoder(tgt_vocab, embedding_dim, hidden_size)
 
     def forward(self, src, tgt):
-        all_h, h, c = self.encoder(src)
+        all_h, h, c = self.encoder(x=src,h0=None,c0=None)
         logits, alphas = self.decoder(tgt, all_h, h, c)
         return logits, alphas
 
-    def fit()
+    def fit(self, dataloader,epochs, loss_fn, optimizer):
+        epoch_losses = []
+        for epoch in range(epochs):
+            self.train()
+            total_loss = 0
+            for src, tgt_in, tgt_out in dataloader:
+                optimizer.zero_grad()
+                predicition,alphas = self(src=src,tgt=tgt_in)
+                pred = predicition.reshape(-1,self.tgt_vocab)
+                tgt_out = tgt_out.reshape(-1,)
+                loss = loss_fn(pred,tgt_out)
+                loss.backward()
+                optimizer.step()
+                total_loss +=loss.item()
+            avg_loss = total_loss / len(dataloader)
+            epoch_losses.append(avg_loss)
+    
+            if (epoch +1)%10 ==0:
+                print(
+                    f"Epoch {epoch + 1}/{epochs}, "
+                    f"Avg: {avg_loss:.4f}",
+                    f"Loss: {total_loss:.4f}"
+                )
+        return epoch_losses
+
+class CustomDataset(Dataset):
+    def __init__(self, src, tgt_in, tgt_out):
+        self.src = src
+        self.tgt_in = tgt_in
+        self.tgt_out = tgt_out
+
+    def __len__(self):
+        return len(self.src)
+
+    def __getitem__(self, i):
+        return self.src[i], self.tgt_in[i], self.tgt_out[i]
+
+class DataGenerator():
+    @staticmethod
+    def generate_pair(n_samples, seq_len):
+        pad,start,end = 0,1,2
+        src = []
+        tgt_in = []
+        tgt_out = []
+        for i in range(n_samples):
+            input = [random.randint(3,20) for _ in range(seq_len)]
+            output = input[::-1]
+            src.append(input)
+            tgt_in.append([start] + output)
+            tgt_out.append(output + [end])
+        return src, tgt_in,tgt_out
