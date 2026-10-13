@@ -304,6 +304,113 @@ class Seq2SeqAttention(nn.Module):
                     f"Loss: {total_loss:.4f}"
                 )
         return epoch_losses
+    
+    @torch.no_grad()
+    def predict(self, src, start_token=1, end_token=2, max_len=20):
+        self.eval()
+
+        device = next(self.parameters()).device
+        src = src.to(device)
+
+        # Make sure src is batched
+        if src.ndim == 1:
+            src = src.unsqueeze(0)
+
+        # Encode
+        all_h, h, c = self.encoder(src)
+
+        batch_size = src.size(0)
+
+        # Decoder starts with <SOS>
+        decoder_input = torch.full(
+            (batch_size, 1),
+            start_token,
+            dtype=torch.long,
+            device=device
+        )
+
+        predictions = []
+        attention_steps = []
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+        for _ in range(max_len):
+            logits, alphas = self.decoder(decoder_input, all_h, h, c)
+
+            # last predicted token
+            next_token = logits[:, -1, :].argmax(dim=-1)   # (batch,)
+            predictions.append(next_token)
+
+            # attention for last decoding step
+            last_alpha = alphas[:, -1, :]                  # (batch, src_len)
+            attention_steps.append(last_alpha)
+
+            finished |= (next_token == end_token)
+            if finished.all():
+                break
+
+            decoder_input = torch.cat(
+                [decoder_input, next_token.unsqueeze(1)],
+                dim=1
+            )
+
+        predictions = torch.stack(predictions, dim=1)      # (batch, pred_len)
+        attentions = torch.stack(attention_steps, dim=1)   # (batch, pred_len, src_len)
+
+        return predictions, attentions
+
+    @torch.no_grad()
+    def evaluate_autoregressive(self, dataloader, start_token=1, end_token=2, pad_token=0, max_len=None):
+        self.eval()
+
+        device = next(self.parameters()).device
+        correct_tokens = 0
+        total_tokens = 0
+        correct_sequences = 0
+        total_sequences = 0
+
+        for src, tgt_in, tgt_out in dataloader:
+            src = src.to(device)
+            tgt_out = tgt_out.to(device)
+
+            if max_len is None:
+                decode_len = tgt_out.size(1)
+            else:
+                decode_len = max_len
+
+            preds, _ = self.predict(
+                src,
+                start_token=start_token,
+                end_token=end_token,
+                max_len=decode_len
+            )
+
+            # If generated length is shorter, pad it
+            if preds.size(1) < tgt_out.size(1):
+                pad = torch.full(
+                    (preds.size(0), tgt_out.size(1) - preds.size(1)),
+                    pad_token,
+                    dtype=preds.dtype,
+                    device=preds.device
+                )
+                preds = torch.cat([preds, pad], dim=1)
+
+            # If longer, trim
+            preds = preds[:, :tgt_out.size(1)]
+
+            mask = tgt_out != pad_token
+
+            correct_tokens += ((preds == tgt_out) & mask).sum().item()
+            total_tokens += mask.sum().item()
+
+            seq_match = ((preds == tgt_out) | ~mask).all(dim=1)
+            correct_sequences += seq_match.sum().item()
+            total_sequences += tgt_out.size(0)
+
+        token_acc = correct_tokens / total_tokens if total_tokens > 0 else 0.0
+        seq_acc = correct_sequences / total_sequences if total_sequences > 0 else 0.0
+
+        return token_acc, seq_acc
+
 
 class CustomDataset(Dataset):
     def __init__(self, src, tgt_in, tgt_out):
